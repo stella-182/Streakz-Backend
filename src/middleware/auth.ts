@@ -8,12 +8,14 @@ export const authenticate = (
   next: NextFunction
 ): void => {
   const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer ')) {
+  const queryToken = req.query.token as string | undefined;
+
+  if (!authHeader?.startsWith('Bearer ') && !queryToken) {
     res.status(401).json({ message: 'Unauthorized' });
     return;
   }
 
-  const token = authHeader.split(' ')[1];
+  const token = queryToken ?? authHeader!.split(' ')[1];
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as JwtPayload;
     req.user = decoded;
