@@ -1,9 +1,24 @@
+// ─── Database Seed Script ─────────────────────────────────────────────────────
+// This script populates the database with realistic test data.
+// Run it with: npx ts-node prisma/Seed.ts
+//
+// What it does:
+//   1. Clears all existing order/table/menu data (NOT users or branches)
+//   2. Creates a unique themed menu for each of the 7 branches
+//   3. Creates 16 tables per branch (table 0 for online orders, 1–15 for dine-in)
+//   4. Creates one staff account per role (waiter, chef, cashier, etc.)
+//
+// Password for all seed accounts: Password123!
+
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
 async function main() {
+  // ── Step 1: Clear operational data ──────────────────────────────────────────
+  // Delete in reverse dependency order (receipts → order items → orders → tables → menu items)
+  // This avoids foreign key errors. Branches and users are preserved.
   await prisma.receipt.deleteMany();
   await prisma.orderItem.deleteMany();
   await prisma.order.deleteMany();
@@ -11,15 +26,20 @@ async function main() {
   await prisma.menuItem.deleteMany();
   console.log('🗑 Cleared old data');
 
+  // ── Step 2: Look up branches ─────────────────────────────────────────────────
+  // Branches are created by create-users.ts and should already exist.
+  // We look them up by name to get their IDs for linking menu items.
   const branches = await prisma.branch.findMany();
   const getBranch = (name: string) => branches.find((b) => b.name === name)!;
 
   // ============================================
   // 👑 HQ LONDON — Premium Fine Dining Menu
   // ============================================
+  // Each createMany() call inserts all items for one branch in a single DB query.
+  // Items are linked to the branch via branchId.
   await prisma.menuItem.createMany({
     data: [
-      // Breakfast
+      // Breakfast items
       { name: 'Royal English Breakfast', description: 'Premium eggs, truffle sausage, smoked bacon, sourdough toast and grilled tomato', price: 18.99, category: 'Breakfast', imageUrl: 'https://images.unsplash.com/photo-1533089860892-a7c6f0a88666?w=600&fit=crop', branchId: getBranch('HQ London').id },
       { name: 'Eggs Benedict', description: 'Poached eggs on brioche with hollandaise sauce and smoked ham', price: 14.99, category: 'Breakfast', imageUrl: 'https://images.unsplash.com/photo-1608039829572-78524f79c4c7?w=600&fit=crop', branchId: getBranch('HQ London').id },
       { name: 'Smoked Salmon Royale', description: 'Scottish smoked salmon with cream cheese, capers and toasted bagel', price: 16.99, category: 'Breakfast', imageUrl: 'https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?w=600&fit=crop', branchId: getBranch('HQ London').id },
@@ -273,16 +293,19 @@ async function main() {
 
   console.log('🎉 All branches now have unique menus with images!');
 
-  // Create tables per branch:
-  //   table 0  = Online Orders (virtual, for web orders with no physical table)
-  //   tables 1–15 = dine-in tables (mix of 2, 4, 6 seats)
+  // ── Step 3: Create tables per branch ─────────────────────────────────────────
+  // Each branch gets 16 tables:
+  //   table 0  = Online Orders (virtual — used when a customer orders via the website)
+  //   table 1–4 = 2-seater tables (small/couples)
+  //   table 5–10 = 4-seater tables (families)
+  //   table 11–15 = 6-seater tables (groups)
   for (const branch of branches) {
     await prisma.table.createMany({
       data: [
-        { number: 0, seats: 0, branchId: branch.id }, // online orders slot
+        { number: 0, seats: 0, branchId: branch.id }, // Virtual online-order slot
         ...Array.from({ length: 15 }, (_, i) => ({
           number: i + 1,
-          seats: i < 5 ? 2 : i < 11 ? 4 : 6,
+          seats: i < 5 ? 2 : i < 11 ? 4 : 6,      // Seat count depends on table index
           branchId: branch.id,
         })),
       ],
@@ -290,13 +313,12 @@ async function main() {
   }
   console.log(`✅ Created tables (0–15) for each of the ${branches.length} branches`);
 
-  // ─── Staff accounts ───────────────────────────────────────────────────────
-  // One waiter, chef, cashier and branch manager per branch.
-  // Login password for ALL staff: Password123!
+  // ── Step 4: Create staff accounts ────────────────────────────────────────────
+  // These accounts are shared — staff log in and select their branch at login time.
+  // All accounts use the same password for simplicity in development/demo.
   const pw = await bcrypt.hash('Password123!', 10);
 
-  // One global account per branch-level role.
-  // Branch is selected at login time — no branch stored on these accounts.
+  // One shared account per role (no branchId — they pick their branch at login)
   const GLOBAL_STAFF = [
     { name: 'Waiter',          email: 'waiter@streakz.co.uk',   role: 'WAITER'         },
     { name: 'Chef',            email: 'chef@streakz.co.uk',     role: 'CHEF'           },
@@ -305,6 +327,7 @@ async function main() {
   ] as const;
 
   for (const acc of GLOBAL_STAFF) {
+    // upsert = update if exists, create if not — safe to run multiple times
     await prisma.user.upsert({
       where: { email: acc.email },
       update: {},
@@ -312,7 +335,7 @@ async function main() {
     });
   }
 
-  // One global admin + one HQ Manager
+  // Admin (no branch) and HQ Manager (linked to HQ London branch)
   await prisma.user.upsert({
     where: { email: 'admin@streakz.co.uk' },
     update: {},
@@ -328,6 +351,8 @@ async function main() {
   console.log('   e.g. waiter.manchester@streakz.co.uk / Password123!');
 }
 
+// ── Run the seed ───────────────────────────────────────────────────────────────
+// Disconnect from the database when done (success or error)
 main()
   .catch((e) => { console.error(e); process.exit(1); })
   .finally(async () => { await prisma.$disconnect(); });
